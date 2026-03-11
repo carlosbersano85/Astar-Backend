@@ -34,11 +34,11 @@ async function bootstrap() {
     rawBody: false,
   });
 
-  // Global validation pipe
+  // Global validation pipe (whitelist strips unknown props; forbidNonWhitelisted: false avoids 400 on extra fields)
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: false,
       transform: true,
     }),
   );
