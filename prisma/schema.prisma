@@ -29,6 +29,9 @@ model User {
   birthDate          String?            @map("birth_date")
   birthPlace         String?            @map("birth_place")
   birthTime          String?            @map("birth_time")
+  paypalSubscriptionId String?          @map("paypal_subscription_id")
+  paypalPlan         String?            @map("paypal_plan")
+  paypalBillingCycle String?            @map("paypal_billing_cycle")
   createdAt          DateTime           @default(now()) @map("created_at")
   updatedAt          DateTime           @updatedAt @map("updated_at")
   reports            Report[]
