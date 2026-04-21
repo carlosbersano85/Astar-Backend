@@ -29,6 +29,31 @@ interface PayPalVerifyWebhookResponse {
   verification_status?: string;
 }
 
+interface PayPalOrderResponse {
+  id: string;
+  status: string;
+  links?: Array<{ href: string; rel: string }>;
+  purchase_units?: Array<{
+    custom_id?: string;
+    amount?: { value: string; currency_code: string };
+    payments?: {
+      captures?: Array<{
+        id: string;
+        status: string;
+        amount: { value: string; currency_code: string };
+      }>;
+    };
+  }>;
+}
+
+interface ExtraSessionPricing {
+  subscriberAmount: string;
+  nonSubscriberAmount: string;
+  appliedAmount: string;
+  isSubscriber: boolean;
+  currency: string;
+}
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -38,61 +63,178 @@ export class PaymentsService {
     private readonly usersService: UsersService,
   ) {}
 
-  async handlePayPalWebhook(
-    headers: Record<string, string | string[] | undefined>,
-    event: Record<string, unknown>,
-  ) {
-    await this.verifyWebhookSignature(headers, event);
+  // ─── Extra Session Pricing ────────────────────────────────────────────────
 
-    const eventType = String(event.event_type ?? '');
-    const resource = this.asRecord(event.resource);
-    const subscriptionId = this.getSubscriptionIdFromEvent(resource);
-
-    if (!subscriptionId) {
-      this.logger.warn(`Webhook ignored: missing subscription id for event ${eventType}`);
-      return { received: true, ignored: true, reason: 'missing-subscription-id' };
+  async getPayPalExtraSessionPricing(userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (!user || user.role !== 'client') {
+      throw new ForbiddenException('Only client users can buy extra sessions.');
     }
 
-    const user = await this.prisma.user.findFirst({ where: { paypalSubscriptionId: subscriptionId } });
-    if (!user) {
-      this.logger.warn(`Webhook ignored: no user linked to subscription ${subscriptionId} (${eventType})`);
-      return { received: true, ignored: true, reason: 'subscription-not-linked' };
-    }
-
-    if (
-      eventType === 'BILLING.SUBSCRIPTION.ACTIVATED' ||
-      eventType === 'BILLING.SUBSCRIPTION.RE-ACTIVATED' ||
-      eventType === 'PAYMENT.SALE.COMPLETED'
-    ) {
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { subscriptionStatus: 'active' },
-      });
-      return { received: true, processed: true };
-    }
-
-    if (
-      eventType === 'BILLING.SUBSCRIPTION.CANCELLED' ||
-      eventType === 'BILLING.SUBSCRIPTION.SUSPENDED' ||
-      eventType === 'BILLING.SUBSCRIPTION.EXPIRED'
-    ) {
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { subscriptionStatus: 'cancelled' },
-      });
-      return { received: true, processed: true };
-    }
-
-    if (eventType === 'BILLING.SUBSCRIPTION.PAYMENT.FAILED') {
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { subscriptionStatus: 'inactive' },
-      });
-      return { received: true, processed: true };
-    }
-
-    return { received: true, ignored: true, reason: 'unsupported-event' };
+    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
+    return {
+      subscriberAmount: pricing.subscriberAmount,
+      nonSubscriberAmount: pricing.nonSubscriberAmount,
+      amount: pricing.appliedAmount,
+      isSubscriber: pricing.isSubscriber,
+      currency: pricing.currency,
+    };
   }
+
+  // ─── Extra Session: Create Order (Orders API v2) ──────────────────────────
+
+  async createPayPalExtraSessionOrder(userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (!user || user.role !== 'client') {
+      throw new ForbiddenException('Only client users can buy extra sessions.');
+    }
+
+    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
+    const frontendBaseUrl = this.getFrontendBaseUrl();
+    const tier = pricing.isSubscriber ? 'subscriber' : 'standard';
+
+    // Uses the Orders API v2 — correct API for one-time payments.
+    // The Subscriptions API was causing EXPIRED errors because PayPal
+    // subscriptions require a recurring billing cycle to activate.
+    const payload = {
+      intent: 'CAPTURE',
+      purchase_units: [
+        {
+          amount: {
+            currency_code: pricing.currency,
+            value: pricing.appliedAmount,
+          },
+          custom_id: `${userId}:extra-session:${tier}`,
+          description: 'Sesion privada adicional',
+        },
+      ],
+      application_context: {
+        brand_name: 'Astar',
+        user_action: 'PAY_NOW',
+        return_url: `${frontendBaseUrl}/portal/purchase?paypal=success&product=extra-session`,
+        cancel_url: `${frontendBaseUrl}/portal/purchase?paypal=cancel&product=extra-session`,
+        shipping_preference: 'NO_SHIPPING',
+      },
+    };
+
+    const data = await this.payPalRequest<PayPalOrderResponse>('/v2/checkout/orders', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    const approvalUrl = data.links?.find((l) => l.rel === 'approve')?.href;
+    if (!approvalUrl) {
+      throw new BadGatewayException('PayPal did not return an approval URL for extra session checkout.');
+    }
+
+    // NOTE: We do NOT save this order ID to the user record.
+    // Extra sessions are one-time purchases and must not overwrite
+    // the user's real paypalSubscriptionId used by webhook handling.
+    return {
+      orderId: data.id,
+      approvalUrl,
+      subscriberAmount: pricing.subscriberAmount,
+      nonSubscriberAmount: pricing.nonSubscriberAmount,
+      amount: pricing.appliedAmount,
+      isSubscriber: pricing.isSubscriber,
+      currency: pricing.currency,
+    };
+  }
+
+  // ─── Extra Session: Confirm & Capture Order ───────────────────────────────
+
+  async confirmPayPalExtraSessionOrder(userId: string, orderId: string) {
+    if (!orderId?.trim()) {
+      throw new BadRequestException('orderId is required.');
+    }
+
+    const user = await this.usersService.findById(userId);
+    if (!user || user.role !== 'client') {
+      throw new ForbiddenException('Only client users can confirm extra session purchases.');
+    }
+
+    // Step 1: fetch the order to check its current status
+    const details = await this.payPalRequest<PayPalOrderResponse>(
+      `/v2/checkout/orders/${encodeURIComponent(orderId)}`,
+      { method: 'GET' },
+    );
+
+    const orderStatus = (details.status ?? '').toUpperCase();
+    this.logger.debug(`PayPal order ${orderId} status: ${orderStatus}`);
+
+    // Already captured — idempotent path, still create DB record if missing
+    if (orderStatus === 'COMPLETED') {
+      return this.handleCompletedOrder(details, userId, orderId, user);
+    }
+
+    // Terminal states — user must start a new checkout
+    if (orderStatus === 'VOIDED' || orderStatus === 'EXPIRED') {
+      throw new BadRequestException(
+        'EXPIRED_CHECKOUT: Este pago ha expirado o fue cancelado en PayPal. Por favor inicia un nuevo pago.',
+      );
+    }
+
+    if (orderStatus !== 'APPROVED') {
+      throw new BadRequestException(
+        `El pago aun no fue aprobado (estado: ${orderStatus || 'UNKNOWN'}). Por favor reintenta en unos segundos.`,
+      );
+    }
+
+    // Verify the order belongs to this user via custom_id
+    const unit = details.purchase_units?.[0];
+    const customInfo = this.parseExtraSessionCustomId(unit?.custom_id);
+    if (customInfo && customInfo.userId !== userId) {
+      throw new ForbiddenException('This extra session order does not belong to the current user.');
+    }
+
+    // Step 2: capture the payment
+    const capture = await this.payPalRequest<PayPalOrderResponse>(
+      `/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`,
+      { method: 'POST', body: JSON.stringify({}) },
+    );
+
+    const captureStatus = (capture.status ?? '').toUpperCase();
+    this.logger.debug(`PayPal order ${orderId} capture status: ${captureStatus}`);
+
+    if (captureStatus !== 'COMPLETED') {
+      throw new BadRequestException(
+        `La captura del pago no se completó (estado: ${captureStatus}). Por favor contacta soporte.`,
+      );
+    }
+
+    return this.handleCompletedOrder(capture, userId, orderId, user);
+  }
+
+  private async handleCompletedOrder(
+    orderData: PayPalOrderResponse,
+    userId: string,
+    orderId: string,
+    user: { subscriptionStatus?: string; name: string },
+  ) {
+    const unit = orderData.purchase_units?.[0];
+    const capture = unit?.payments?.captures?.[0];
+
+    const amount = capture?.amount?.value ?? unit?.amount?.value ?? '0';
+    const currency = capture?.amount?.currency_code ?? unit?.amount?.currency_code ?? 'USD';
+    const customInfo = this.parseExtraSessionCustomId(unit?.custom_id);
+
+    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
+    const orderType = customInfo?.tier === 'subscriber' ? 'extra_session_subscriber' : 'extra_session_standard';
+    const tier = customInfo?.tier ?? (pricing.isSubscriber ? 'subscriber' : 'standard');
+
+    const { created } = await this.createOrderAndAdminNotification({
+      userId,
+      orderType,
+      amount,
+      method: 'paypal',
+      clientName: user.name,
+      checkoutReference: orderId,
+    });
+
+    return { ok: true, orderId, created, amount, currency, tier };
+  }
+
+  // ─── Regular Subscriptions ────────────────────────────────────────────────
 
   async createPayPalSubscription(userId: string, plan: SubscriptionPlan, billing: BillingCycle) {
     this.assertPlan(plan);
@@ -137,10 +279,7 @@ export class PaymentsService {
       },
     });
 
-    return {
-      subscriptionId: data.id,
-      approvalUrl,
-    };
+    return { subscriptionId: data.id, approvalUrl };
   }
 
   async confirmPayPalSubscription(userId: string, subscriptionId: string) {
@@ -191,13 +330,7 @@ export class PaymentsService {
       });
     }
 
-    return {
-      subscriptionId: data.id,
-      paypalStatus,
-      subscriptionStatus,
-      plan: finalPlan,
-      billing: finalBilling,
-    };
+    return { subscriptionId: data.id, paypalStatus, subscriptionStatus, plan: finalPlan, billing: finalBilling };
   }
 
   async cancelPayPalSubscription(userId: string, reason?: string) {
@@ -227,10 +360,166 @@ export class PaymentsService {
     return { ok: true };
   }
 
+  // ─── Webhook ──────────────────────────────────────────────────────────────
+
+  async handlePayPalWebhook(
+    headers: Record<string, string | string[] | undefined>,
+    event: Record<string, unknown>,
+  ) {
+    await this.verifyWebhookSignature(headers, event);
+
+    const eventType = String(event.event_type ?? '');
+    const resource = this.asRecord(event.resource);
+    const subscriptionId = this.getSubscriptionIdFromEvent(resource);
+
+    if (!subscriptionId) {
+      this.logger.warn(`Webhook ignored: missing subscription id for event ${eventType}`);
+      return { received: true, ignored: true, reason: 'missing-subscription-id' };
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { paypalSubscriptionId: subscriptionId } });
+    if (!user) {
+      this.logger.warn(`Webhook ignored: no user linked to subscription ${subscriptionId} (${eventType})`);
+      return { received: true, ignored: true, reason: 'subscription-not-linked' };
+    }
+
+    if (
+      eventType === 'BILLING.SUBSCRIPTION.ACTIVATED' ||
+      eventType === 'BILLING.SUBSCRIPTION.RE-ACTIVATED' ||
+      eventType === 'PAYMENT.SALE.COMPLETED'
+    ) {
+      await this.prisma.user.update({ where: { id: user.id }, data: { subscriptionStatus: 'active' } });
+      return { received: true, processed: true };
+    }
+
+    if (
+      eventType === 'BILLING.SUBSCRIPTION.CANCELLED' ||
+      eventType === 'BILLING.SUBSCRIPTION.SUSPENDED' ||
+      eventType === 'BILLING.SUBSCRIPTION.EXPIRED'
+    ) {
+      await this.prisma.user.update({ where: { id: user.id }, data: { subscriptionStatus: 'cancelled' } });
+      return { received: true, processed: true };
+    }
+
+    if (eventType === 'BILLING.SUBSCRIPTION.PAYMENT.FAILED') {
+      await this.prisma.user.update({ where: { id: user.id }, data: { subscriptionStatus: 'inactive' } });
+      return { received: true, processed: true };
+    }
+
+    return { received: true, ignored: true, reason: 'unsupported-event' };
+  }
+
+  // ─── Private Helpers ──────────────────────────────────────────────────────
+
   private getPayPalBaseUrl() {
     return process.env.PAYPAL_ENV === 'live'
       ? 'https://api-m.paypal.com'
       : 'https://api-m.sandbox.paypal.com';
+  }
+
+  private getExtraSessionPricingForUser(subscriptionStatus?: string): ExtraSessionPricing {
+    const subscriberAmount = this.getRequiredPriceEnv('PAYPAL_EXTRA_SESSION_PRICE_SUBSCRIBER');
+    const nonSubscriberAmount = this.getRequiredPriceEnv('PAYPAL_EXTRA_SESSION_PRICE_NON_SUBSCRIBER');
+    const isSubscriber = subscriptionStatus === 'active';
+
+    return {
+      subscriberAmount,
+      nonSubscriberAmount,
+      appliedAmount: isSubscriber ? subscriberAmount : nonSubscriberAmount,
+      isSubscriber,
+      currency: this.getExtraSessionCurrency(),
+    };
+  }
+
+  private getRequiredPriceEnv(
+    variableName: 'PAYPAL_EXTRA_SESSION_PRICE_SUBSCRIBER' | 'PAYPAL_EXTRA_SESSION_PRICE_NON_SUBSCRIBER',
+  ) {
+    const value = process.env[variableName]?.trim();
+    if (!value) {
+      throw new InternalServerErrorException(`Missing ${variableName} environment variable.`);
+    }
+
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      throw new InternalServerErrorException(`${variableName} must be a positive number.`);
+    }
+
+    return numeric.toFixed(2);
+  }
+
+  private getExtraSessionCurrency() {
+    return process.env.PAYPAL_EXTRA_SESSION_CURRENCY?.trim().toUpperCase() || 'USD';
+  }
+
+  private parseExtraSessionCustomId(customId?: string): { userId: string; tier: 'subscriber' | 'standard' } | null {
+    if (!customId) return null;
+    const [userId, product, tier] = customId.split(':');
+    if (!userId || product !== 'extra-session' || (tier !== 'subscriber' && tier !== 'standard')) {
+      return null;
+    }
+    return { userId, tier };
+  }
+
+  private async createOrderAndAdminNotification(input: {
+    userId: string;
+    orderType: string;
+    amount: string;
+    method: string;
+    clientName: string;
+    checkoutReference?: string;
+  }) {
+    const adminUsers = await this.prisma.user.findMany({
+      where: { role: 'admin' },
+      select: { id: true },
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      const duplicateWindowStart = new Date(Date.now() - 6 * 60 * 60 * 1000);
+      const existingOrder = await tx.order.findFirst({
+        where: {
+          userId: input.userId,
+          type: input.orderType,
+          amount: input.amount,
+          method: input.method,
+          createdAt: { gte: duplicateWindowStart },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (existingOrder) {
+        return { created: false, orderId: existingOrder.id };
+      }
+
+      const order = await tx.order.create({
+        data: {
+          userId: input.userId,
+          type: input.orderType,
+          amount: input.amount,
+          method: input.method,
+        },
+      });
+
+      if (adminUsers.length > 0) {
+        const checkoutSuffix = input.checkoutReference ? ` - ${input.checkoutReference}` : '';
+        await tx.notification.createMany({
+          data: adminUsers.map((admin) => ({
+            userId: admin.id,
+            title: 'Nuevo pedido',
+            body: `${input.orderType} - ${input.amount} - ${input.clientName}${checkoutSuffix}`,
+            category: 'order',
+            read: false,
+          })),
+        });
+      }
+
+      return { created: true, orderId: order.id };
+    });
+  }
+
+  private sleep(ms: number) {
+    return new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
   }
 
   private getFrontendBaseUrl() {
@@ -386,10 +675,7 @@ export class PaymentsService {
 
     const verification = await this.payPalRequest<PayPalVerifyWebhookResponse>(
       '/v1/notifications/verify-webhook-signature',
-      {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      },
+      { method: 'POST', body: JSON.stringify(payload) },
     );
 
     if (verification.verification_status !== 'SUCCESS') {
