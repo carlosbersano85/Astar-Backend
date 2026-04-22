@@ -29,6 +29,39 @@ export class PaymentsController {
     return this.paymentsService.confirmPayPalExtraSessionOrder(user.id, checkoutId);
   }
 
+  @Get('mercado-pago/extra-session/pricing')
+  @UseGuards(JwtAuthGuard)
+  async getMercadoPagoExtraSessionPricing(@CurrentUser() user: { id: string }) {
+    return this.paymentsService.getMercadoPagoExtraSessionPricing(user.id);
+  }
+
+  @Post('mercado-pago/extra-session/create')
+  @UseGuards(JwtAuthGuard)
+  async createMercadoPagoExtraSessionPreference(@CurrentUser() user: { id: string }) {
+    return this.paymentsService.createMercadoPagoExtraSessionPreference(user.id);
+  }
+
+  @Post('mercado-pago/extra-session/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirmMercadoPagoExtraSessionPayment(
+    @CurrentUser() user: { id: string },
+    @Body() body: { paymentId?: string; collectionId?: string },
+  ) {
+    const checkoutId = body.paymentId?.trim() || body.collectionId?.trim() || '';
+    return this.paymentsService.confirmMercadoPagoExtraSessionPayment(user.id, checkoutId);
+  }
+
+  @Get('mercado-pago/extra-session/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirmMercadoPagoExtraSessionPaymentFromQuery(
+    @CurrentUser() user: { id: string },
+    @Query('payment_id') paymentId?: string,
+    @Query('collection_id') collectionId?: string,
+  ) {
+    const checkoutId = paymentId?.trim() || collectionId?.trim() || '';
+    return this.paymentsService.confirmMercadoPagoExtraSessionPayment(user.id, checkoutId);
+  }
+
   @Get('paypal/extra-session/confirm')
   @UseGuards(JwtAuthGuard)
   async confirmPayPalExtraSessionOrderFromQuery(
@@ -75,11 +108,68 @@ export class PaymentsController {
     return this.paymentsService.cancelPayPalSubscription(user.id, body.reason);
   }
 
+  @Post('mercado-pago/subscription/create')
+  @UseGuards(JwtAuthGuard)
+  async createMercadoPagoSubscription(
+    @CurrentUser() user: { id: string },
+    @Body() body: { plan: SubscriptionPlan; billing: BillingCycle },
+  ) {
+    return this.paymentsService.createMercadoPagoSubscription(user.id, body.plan, body.billing);
+  }
+
+  @Post('mercado-pago/subscription/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirmMercadoPagoSubscription(
+    @CurrentUser() user: { id: string },
+    @Body() body: { subscriptionId?: string; preapprovalId?: string; paymentId?: string; collectionId?: string },
+  ) {
+    const checkoutId =
+      body.paymentId?.trim() ||
+      body.collectionId?.trim() ||
+      body.subscriptionId?.trim() ||
+      body.preapprovalId?.trim() ||
+      '';
+    return this.paymentsService.confirmMercadoPagoSubscription(user.id, checkoutId);
+  }
+
+  @Get('mercado-pago/subscription/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirmMercadoPagoSubscriptionFromQuery(
+    @CurrentUser() user: { id: string },
+    @Query('payment_id') paymentId?: string,
+    @Query('collection_id') collectionId?: string,
+    @Query('preapproval_id') preapprovalId?: string,
+    @Query('subscription_id') subscriptionId?: string,
+  ) {
+    const checkoutId =
+      paymentId?.trim() ||
+      collectionId?.trim() ||
+      preapprovalId?.trim() ||
+      subscriptionId?.trim() ||
+      '';
+    return this.paymentsService.confirmMercadoPagoSubscription(user.id, checkoutId);
+  }
+
+  @Post('mercado-pago/subscription/cancel')
+  @UseGuards(JwtAuthGuard)
+  async cancelMercadoPagoSubscription(
+    @CurrentUser() user: { id: string },
+    @Body() body: { subscriptionId?: string; preapprovalId?: string; reason?: string },
+  ) {
+    const checkoutId = body.subscriptionId?.trim() || body.preapprovalId?.trim() || '';
+    return this.paymentsService.cancelMercadoPagoSubscription(user.id, checkoutId, body.reason);
+  }
+
   @Post('paypal/webhook')
   async handlePayPalWebhook(
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Body() event: Record<string, unknown>,
   ) {
     return this.paymentsService.handlePayPalWebhook(headers, event);
+  }
+
+  @Post('mercado-pago/webhook')
+  async handleMercadoPagoWebhook(@Body() event: Record<string, unknown>) {
+    return this.paymentsService.handleMercadoPagoWebhook(event);
   }
 }
