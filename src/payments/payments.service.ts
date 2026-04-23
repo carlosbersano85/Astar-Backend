@@ -400,6 +400,23 @@ export class PaymentsService {
       throw new ForbiddenException('Only client users can subscribe.');
     }
 
+    if (this.isBillingTestMode()) {
+      const subscriptionId = this.buildTestSubscriptionId('paypal', userId, plan, billing);
+      const approvalUrl = this.buildTestApprovalUrl('paypal', subscriptionId);
+
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          subscriptionId,
+          subscriptionPlan: plan,
+          subscriptionBilling: billing,
+          subscriptionProvider: 'paypal',
+        },
+      });
+
+      return { subscriptionId, approvalUrl, simulated: true };
+    }
+
     const planId = this.getPayPalPlanId(plan, billing);
     const frontendBaseUrl = this.getFrontendBaseUrl();
 
@@ -455,6 +472,56 @@ export class PaymentsService {
       subscriptionStatus: string;
     };
 
+    if (this.isBillingTestMode()) {
+      const customInfo = this.parseCustomId(subscriptionId);
+      if (customInfo && customInfo.userId !== userId) {
+        throw new ForbiddenException('This PayPal subscription does not belong to the current user.');
+      }
+
+      const finalPlan = customInfo?.plan ?? subscriptionUser.subscriptionPlan ?? null;
+      const finalBilling = customInfo?.billing ?? subscriptionUser.subscriptionBilling ?? null;
+      if (!finalPlan || !finalBilling) {
+        throw new BadRequestException('No se pudo determinar plan/billing para esta suscripción de PayPal.');
+      }
+
+      const subscriptionStatus: AppSubscriptionStatus = 'active';
+      const previouslyActive =
+        subscriptionUser.subscriptionStatus === 'active' &&
+        subscriptionUser.subscriptionId === subscriptionId &&
+        subscriptionUser.subscriptionProvider === 'paypal';
+
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          subscriptionStatus,
+          subscriptionId,
+          subscriptionPlan: finalPlan,
+          subscriptionBilling: finalBilling,
+          subscriptionProvider: 'paypal',
+        },
+      });
+
+      if (!previouslyActive) {
+        await this.prisma.order.create({
+          data: {
+            userId,
+            type: finalBilling,
+            amount: this.getPlanAmount(finalPlan, finalBilling),
+            method: 'paypal',
+          },
+        });
+      }
+
+      return {
+        subscriptionId,
+        paypalStatus: 'ACTIVE',
+        subscriptionStatus,
+        plan: finalPlan,
+        billing: finalBilling,
+        simulated: true,
+      };
+    }
+
     const data = await this.payPalRequest<PayPalGetSubscriptionResponse>(
       `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`,
       { method: 'GET' },
@@ -470,6 +537,10 @@ export class PaymentsService {
 
     const finalPlan = customInfo?.plan ?? subscriptionUser.subscriptionPlan ?? null;
     const finalBilling = customInfo?.billing ?? subscriptionUser.subscriptionBilling ?? null;
+    if (!finalPlan || !finalBilling) {
+      throw new BadRequestException('No se pudo determinar plan/billing para esta suscripción de PayPal.');
+    }
+
     const previouslyActive =
       subscriptionUser.subscriptionStatus === 'active' &&
       subscriptionUser.subscriptionId === subscriptionId &&
@@ -486,7 +557,7 @@ export class PaymentsService {
       },
     });
 
-    if (subscriptionStatus === 'active' && !previouslyActive && finalPlan && finalBilling) {
+    if (subscriptionStatus === 'active' && !previouslyActive) {
       await this.prisma.order.create({
         data: {
           userId,
@@ -508,6 +579,7 @@ export class PaymentsService {
     const subscriptionUser = user as {
       subscriptionId?: string | null;
       subscriptionProvider?: string | null;
+      subscriptionBilling?: BillingCycle | null;
     };
 
     const subscriptionId = subscriptionUser.subscriptionId;
@@ -519,17 +591,25 @@ export class PaymentsService {
       throw new BadRequestException('This user does not have an active PayPal subscription.');
     }
 
-    await this.payPalRequest<void>(
-      `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ reason: reason?.trim() || 'Cancelled by subscriber from customer portal.' }),
-      },
-    );
+    if (!this.isBillingTestMode()) {
+      await this.payPalRequest<void>(
+        `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ reason: reason?.trim() || 'Cancelled by subscriber from customer portal.' }),
+        },
+      );
+    }
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: { subscriptionStatus: 'cancelled' },
+      data: {
+        subscriptionStatus: 'cancelled',
+        subscriptionId: null,
+        subscriptionPlan: null,
+        subscriptionBilling: null,
+        subscriptionProvider: null,
+      },
     });
 
     return { ok: true };
@@ -544,9 +624,28 @@ export class PaymentsService {
       throw new ForbiddenException('Only client users can subscribe.');
     }
 
+    if (this.isBillingTestMode()) {
+      const subscriptionId = this.buildTestSubscriptionId('mercado_pago', userId, plan, billing);
+      const approvalUrl = this.buildTestApprovalUrl('mercado_pago', subscriptionId);
+      const amount = this.getPlanAmount(plan, billing);
+      const currency = this.getMercadoPagoSubscriptionCurrency();
+
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          subscriptionId,
+          subscriptionPlan: plan,
+          subscriptionBilling: billing,
+          subscriptionProvider: 'mercado_pago',
+        },
+      });
+
+      return { subscriptionId, approvalUrl, amount, currency, simulated: true };
+    }
+
     const frontendBaseUrl = this.getFrontendBaseUrl();
     const amount = Number(this.getPlanAmount(plan, billing));
-    const currency = this.getExtraSessionCurrency();
+    const currency = this.getMercadoPagoSubscriptionCurrency();
     const mode = this.getMercadoPagoSubscriptionMode();
     const backUrls = this.getMercadoPagoSubscriptionBackUrls(frontendBaseUrl);
 
@@ -576,6 +675,10 @@ export class PaymentsService {
           unit_price: amount,
         },
       ],
+      payment_methods: {
+        installments: 1,
+        default_installments: 1,
+      },
       external_reference: `${userId}:${plan}:${billing}`,
       payer: {
         email: user.email,
@@ -609,7 +712,12 @@ export class PaymentsService {
       throw new BadGatewayException('Mercado Pago did not return an approval URL for subscription checkout.');
     }
 
-    return { subscriptionId: data.id, approvalUrl };
+    return {
+      subscriptionId: data.id,
+      approvalUrl,
+      amount: amount.toFixed(2),
+      currency,
+    };
   }
 
   private async createMercadoPagoPreapprovalSubscription(
@@ -628,17 +736,28 @@ export class PaymentsService {
       );
     }
 
+    const autoRecurring =
+      billing === 'annual'
+        ? {
+            // Annual charges once per year in preapproval mode.
+            frequency: 1,
+            frequency_type: 'years',
+            transaction_amount: amount,
+            currency_id: currency,
+          }
+        : {
+            frequency: 1,
+            frequency_type: 'months',
+            transaction_amount: amount,
+            currency_id: currency,
+          };
+
     const payload: Record<string, unknown> = {
       reason: `Astar ${plan} ${billing}`,
       external_reference: `${userId}:${plan}:${billing}`,
       payer_email: user.email,
       back_url: backUrls.success,
-      auto_recurring: {
-        frequency: billing === 'annual' ? 12 : 1,
-        frequency_type: 'months',
-        transaction_amount: amount,
-        currency_id: currency,
-      },
+      auto_recurring: autoRecurring,
       status: 'pending',
     };
 
@@ -667,7 +786,12 @@ export class PaymentsService {
       throw new BadGatewayException('Mercado Pago did not return an approval URL for subscription checkout.');
     }
 
-    return { subscriptionId: data.id, approvalUrl };
+    return {
+      subscriptionId: data.id,
+      approvalUrl,
+      amount: amount.toFixed(2),
+      currency,
+    };
   }
 
   async confirmMercadoPagoSubscription(userId: string, subscriptionId: string) {
@@ -678,6 +802,46 @@ export class PaymentsService {
     const user = await this.usersService.findById(userId);
     if (!user || user.role !== 'client') {
       throw new ForbiddenException('Only client users can confirm subscriptions.');
+    }
+
+    if (this.isBillingTestMode()) {
+      const subscriptionUser = user as {
+        subscriptionPlan?: SubscriptionPlan | null;
+        subscriptionBilling?: BillingCycle | null;
+      };
+
+      const customInfo = this.parseCustomId(subscriptionId);
+      if (customInfo && customInfo.userId !== userId) {
+        throw new ForbiddenException('This Mercado Pago subscription does not belong to the current user.');
+      }
+
+      const finalPlan = customInfo?.plan ?? subscriptionUser.subscriptionPlan ?? null;
+      const finalBilling = customInfo?.billing ?? subscriptionUser.subscriptionBilling ?? null;
+      if (!finalPlan || !finalBilling) {
+        throw new BadRequestException('No se pudo determinar plan/billing para esta suscripción de Mercado Pago.');
+      }
+
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          subscriptionStatus: 'active',
+          subscriptionId,
+          subscriptionPlan: finalPlan,
+          subscriptionBilling: finalBilling,
+          subscriptionProvider: 'mercado_pago',
+        },
+      });
+
+      await this.createRecurringSubscriptionOrderIfNeeded(userId, 'mercado_pago', finalPlan, finalBilling);
+
+      return {
+        subscriptionId,
+        mercadoPagoStatus: 'approved',
+        subscriptionStatus: 'active',
+        plan: finalPlan,
+        billing: finalBilling,
+        simulated: true,
+      };
     }
 
     const mode = this.getMercadoPagoSubscriptionMode();
@@ -854,7 +1018,9 @@ export class PaymentsService {
     headers: Record<string, string | string[] | undefined>,
     event: Record<string, unknown>,
   ) {
-    await this.verifyWebhookSignature(headers, event);
+    if (!this.isBillingTestMode()) {
+      await this.verifyWebhookSignature(headers, event);
+    }
 
     const eventType = String(event.event_type ?? '');
     const resource = this.asRecord(event.resource);
@@ -878,6 +1044,15 @@ export class PaymentsService {
       eventType === 'BILLING.SUBSCRIPTION.RE-ACTIVATED' ||
       eventType === 'PAYMENT.SALE.COMPLETED'
     ) {
+      if (eventType === 'PAYMENT.SALE.COMPLETED') {
+        await this.createRecurringSubscriptionOrderIfNeeded(
+          user.id,
+          'paypal',
+          (user as { subscriptionPlan?: string | null }).subscriptionPlan,
+          (user as { subscriptionBilling?: string | null }).subscriptionBilling,
+        );
+      }
+
       await this.prisma.user.update({ where: { id: user.id }, data: { subscriptionStatus: 'active' } });
       return { received: true, processed: true };
     }
@@ -887,8 +1062,20 @@ export class PaymentsService {
       eventType === 'BILLING.SUBSCRIPTION.SUSPENDED' ||
       eventType === 'BILLING.SUBSCRIPTION.EXPIRED'
     ) {
-      await this.prisma.user.update({ where: { id: user.id }, data: { subscriptionStatus: 'cancelled' } });
-      return { received: true, processed: true };
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          subscriptionStatus: 'cancelled',
+          subscriptionId: null,
+          subscriptionPlan: null,
+          subscriptionBilling: null,
+          subscriptionProvider: null,
+        },
+      });
+      return {
+        received: true,
+        processed: true,
+      };
     }
 
     if (eventType === 'BILLING.SUBSCRIPTION.PAYMENT.FAILED') {
@@ -926,6 +1113,13 @@ export class PaymentsService {
 
       const status = (payment.status ?? '').toLowerCase();
       if (status === 'approved' || status === 'authorized') {
+        await this.createRecurringSubscriptionOrderIfNeeded(
+          user.id,
+          'mercado_pago',
+          customInfo.plan,
+          customInfo.billing,
+        );
+
         await this.prisma.user.update({
           where: { id: user.id },
           data: {
@@ -950,7 +1144,11 @@ export class PaymentsService {
             subscriptionProvider: 'mercado_pago',
           },
         });
-        return { received: true, processed: true, status };
+        return {
+          received: true,
+          processed: true,
+          status,
+        };
       }
 
       if (status === 'in_process' || status === 'pending') {
@@ -988,6 +1186,13 @@ export class PaymentsService {
 
       const status = (preapproval.status ?? '').toLowerCase();
       if (status === 'authorized' || status === 'active') {
+        await this.createRecurringSubscriptionOrderIfNeeded(
+          user.id,
+          'mercado_pago',
+          customInfo.plan,
+          customInfo.billing,
+        );
+
         await this.prisma.user.update({
           where: { id: user.id },
           data: {
@@ -1012,7 +1217,11 @@ export class PaymentsService {
             subscriptionProvider: 'mercado_pago',
           },
         });
-        return { received: true, processed: true, status };
+        return {
+          received: true,
+          processed: true,
+          status,
+        };
       }
 
       if (status === 'pending') {
@@ -1045,6 +1254,29 @@ export class PaymentsService {
 
   private getMercadoPagoBaseUrl() {
     return 'https://api.mercadopago.com';
+  }
+
+  private isBillingTestMode() {
+    return process.env.BILLING_TEST_MODE?.trim().toLowerCase() === 'true';
+  }
+
+  private buildTestSubscriptionId(
+    provider: 'paypal' | 'mercado_pago',
+    userId: string,
+    plan: SubscriptionPlan,
+    billing: BillingCycle,
+  ) {
+    return `${userId}:${plan}:${billing}:${provider}:test`;
+  }
+
+  private buildTestApprovalUrl(provider: 'paypal' | 'mercado_pago', subscriptionId: string) {
+    const frontendBaseUrl = this.getFrontendBaseUrl();
+    const encodedSubscriptionId = encodeURIComponent(subscriptionId);
+    if (provider === 'paypal') {
+      return `${frontendBaseUrl}/subscribe/paypal/success?subscription_id=${encodedSubscriptionId}&simulated=1`;
+    }
+
+    return `${frontendBaseUrl}/subscribe/mercado-pago/success?preapproval_id=${encodedSubscriptionId}&simulated=1`;
   }
 
   private getExtraSessionPricingForUser(subscriptionStatus?: string): ExtraSessionPricing {
@@ -1081,6 +1313,14 @@ export class PaymentsService {
     return process.env.PAYPAL_EXTRA_SESSION_CURRENCY?.trim().toUpperCase() || 'USD';
   }
 
+  private getMercadoPagoSubscriptionCurrency() {
+    const configured =
+      process.env.MERCADOPAGO_SUBSCRIPTION_CURRENCY?.trim().toUpperCase() ||
+      process.env.MERCADOPAGO_CURRENCY?.trim().toUpperCase();
+
+    return configured || this.getExtraSessionCurrency();
+  }
+
   private parseExtraSessionCustomId(customId?: string): { userId: string; tier: 'subscriber' | 'standard' } | null {
     if (!customId) return null;
     const [userId, product, tier] = customId.split(':');
@@ -1088,6 +1328,43 @@ export class PaymentsService {
       return null;
     }
     return { userId, tier };
+  }
+
+  private async createRecurringSubscriptionOrderIfNeeded(
+    userId: string,
+    method: 'paypal' | 'mercado_pago',
+    planRaw?: string | null,
+    billingRaw?: string | null,
+  ) {
+    if (!planRaw || !billingRaw || !this.isPlan(planRaw) || !this.isBilling(billingRaw)) {
+      return;
+    }
+
+    const amount = this.getPlanAmount(planRaw, billingRaw);
+    const duplicateWindowStart = new Date(Date.now() - 12 * 60 * 60 * 1000);
+    const existingOrder = await this.prisma.order.findFirst({
+      where: {
+        userId,
+        type: billingRaw,
+        amount,
+        method,
+        createdAt: { gte: duplicateWindowStart },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingOrder) {
+      return;
+    }
+
+    await this.prisma.order.create({
+      data: {
+        userId,
+        type: billingRaw,
+        amount,
+        method,
+      },
+    });
   }
 
   private async createOrderAndAdminNotification(input: {
@@ -1268,9 +1545,9 @@ export class PaymentsService {
 
   private getPlanAmount(plan: SubscriptionPlan, billing: BillingCycle) {
     const amountMap: Record<SubscriptionPlan, Record<BillingCycle, string>> = {
-      essentials: { monthly: '19', annual: '15' },
-      portal: { monthly: '39', annual: '29' },
-      depth: { monthly: '79', annual: '59' },
+      essentials: { monthly: '19', annual: '180' },
+      portal: { monthly: '39', annual: '348' },
+      depth: { monthly: '79', annual: '708' },
     };
     return amountMap[plan][billing];
   }
