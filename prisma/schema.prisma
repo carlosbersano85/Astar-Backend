@@ -19,6 +19,7 @@ enum SubscriptionStatus {
 }
 
 model User {
+<<<<<<< HEAD
   id                 String             @id @default(cuid())
   email              String             @unique
   name               String
@@ -40,6 +41,25 @@ model User {
   notifications      Notification[]
   orders             Order[]
   questions          Question[]
+=======
+  id                    String             @id @default(cuid())
+  email                 String             @unique
+  name                  String
+  passwordHash          String             @map("password_hash")
+  role                  UserRole           @default(client)
+  isActive              Boolean            @default(true) @map("is_active")
+  subscriptionStatus    SubscriptionStatus @default(inactive) @map("subscription_status")
+  birthDate             String?            @map("birth_date")
+  birthPlace            String?            @map("birth_place")
+  birthTime             String?            @map("birth_time")
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+  reports               Report[]
+  messages              Message[]
+  notifications         Notification[]
+  orders                Order[]
+  questions             Question[]
+>>>>>>> 758253a2978cca1f73c78dcbfb86fd7e38228999
   adminNotificationReads AdminNotificationRead[]
 }
 
