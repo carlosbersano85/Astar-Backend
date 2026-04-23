@@ -191,4 +191,32 @@ export class PortalService {
       createdAt: question.createdAt.toISOString(),
     };
   }
+
+  async getSubscriptionStatus(userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (!user || user.role !== 'client') throw new ForbiddenException('Portal is for clients only');
+
+    const isActive = user.subscriptionStatus === 'active';
+
+    return {
+      isActive,
+      status: user.subscriptionStatus,
+      canAccessAstro: isActive,
+      canUseAIChat: isActive,
+    };
+  }
+
+  async getAccessStatus(userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (!user) throw new ForbiddenException('User not found');
+
+    const canAccess = user.subscriptionStatus === 'active';
+
+    return {
+      canAccessAstroData: canAccess,
+      canUseAIChat: canAccess,
+      canAccessPortalFeatures: canAccess,
+      reason: canAccess ? 'granted' : 'subscription_required',
+    };
+  }
 }
