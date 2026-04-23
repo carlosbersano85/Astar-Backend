@@ -78,17 +78,29 @@ async function main() {
     return data;
   }
 
-  // Lump sum: billed once per year
+  // Prices must match PaymentsService.getPlanAmount()
   const plans = [
-    { key: 'essentials', label: 'Essentials', amount: '180.00' }, // $15 x 12
-    { key: 'portal',     label: 'Portal',     amount: '348.00' }, // $29 x 12
-    { key: 'depth',      label: 'Depth',      amount: '708.00' }, // $59 x 12
+    {
+      key: 'essentials',
+      label: 'Essentials',
+      prices: { monthly: '19.00', annual: '180.00' },
+    },
+    {
+      key: 'portal',
+      label: 'Portal',
+      prices: { monthly: '39.00', annual: '348.00' },
+    },
+    {
+      key: 'depth',
+      label: 'Depth',
+      prices: { monthly: '79.00', annual: '708.00' },
+    },
   ];
 
   const results: Record<string, string> = {};
 
   for (const plan of plans) {
-    console.log(`\n--- Creating ${plan.label} annual plan ---`);
+    console.log(`\n--- Creating ${plan.label} product and plans ---`);
 
     // Step 2: Create product
     const product = await paypalPost('/v1/catalogs/products', {
@@ -99,31 +111,51 @@ async function main() {
     });
     console.log(`  Product ID: ${product.id}`);
 
-    // Step 3: Create plan — 1 charge per year, infinite renewals
-    const created = await paypalPost('/v1/billing/plans', {
-      product_id: product.id,
-      name: `Astar ${plan.label} Annual`,
-      description: `Annual subscription billed as a lump sum of $${plan.amount} USD per year`,
-      status: 'ACTIVE',
-      billing_cycles: [
-        {
-          frequency: { interval_unit: 'YEAR', interval_count: 1 },
-          tenure_type: 'REGULAR',
-          sequence: 1,
-          total_cycles: 0, // 0 = renews indefinitely
-          pricing_scheme: {
-            fixed_price: { value: plan.amount, currency_code: 'USD' },
-          },
-        },
-      ],
-      payment_preferences: {
-        auto_bill_outstanding: true,
-        payment_failure_threshold: 3,
+    const cycles = [
+      {
+        key: 'monthly',
+        label: 'Monthly',
+        amount: plan.prices.monthly,
+        frequency: { interval_unit: 'MONTH', interval_count: 1 },
+        description: `Monthly subscription billed at $${plan.prices.monthly} USD per month`,
       },
-    });
+      {
+        key: 'annual',
+        label: 'Annual',
+        amount: plan.prices.annual,
+        frequency: { interval_unit: 'YEAR', interval_count: 1 },
+        description: `Annual subscription billed as a lump sum of $${plan.prices.annual} USD per year`,
+      },
+    ] as const;
 
-    console.log(`  Plan ID: ${created.id}`);
-    results[`PAYPAL_PLAN_ID_${plan.key.toUpperCase()}_ANNUAL`] = created.id;
+    // Step 3: Create monthly + annual plans with infinite renewals
+    for (const cycle of cycles) {
+      const created = await paypalPost('/v1/billing/plans', {
+        product_id: product.id,
+        name: `Astar ${plan.label} ${cycle.label}`,
+        description: cycle.description,
+        status: 'ACTIVE',
+        billing_cycles: [
+          {
+            frequency: cycle.frequency,
+            tenure_type: 'REGULAR',
+            sequence: 1,
+            total_cycles: 0, // 0 = renews indefinitely
+            pricing_scheme: {
+              fixed_price: { value: cycle.amount, currency_code: 'USD' },
+            },
+          },
+        ],
+        payment_preferences: {
+          auto_bill_outstanding: true,
+          payment_failure_threshold: 3,
+        },
+      });
+
+      const envKey = `PAYPAL_PLAN_ID_${plan.key.toUpperCase()}_${cycle.key.toUpperCase()}`;
+      console.log(`  ${cycle.label} Plan ID: ${created.id}`);
+      results[envKey] = created.id;
+    }
   }
 
   // Print ready-to-paste .env lines
