@@ -1006,7 +1006,13 @@ export class PaymentsService {
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: { subscriptionStatus: 'cancelled' },
+      data: {
+        subscriptionStatus: 'cancelled',
+        subscriptionId: null,
+        subscriptionPlan: null,
+        subscriptionBilling: null,
+        subscriptionProvider: null,
+      },
     });
 
     return { ok: true };
@@ -1138,10 +1144,10 @@ export class PaymentsService {
           where: { id: user.id },
           data: {
             subscriptionStatus: 'cancelled',
-            subscriptionId: String(payment.id),
-            subscriptionPlan: customInfo.plan,
-            subscriptionBilling: customInfo.billing,
-            subscriptionProvider: 'mercado_pago',
+            subscriptionId: null,
+            subscriptionPlan: null,
+            subscriptionBilling: null,
+            subscriptionProvider: null,
           },
         });
         return {
@@ -1211,10 +1217,10 @@ export class PaymentsService {
           where: { id: user.id },
           data: {
             subscriptionStatus: 'cancelled',
-            subscriptionId: preapproval.id,
-            subscriptionPlan: customInfo.plan,
-            subscriptionBilling: customInfo.billing,
-            subscriptionProvider: 'mercado_pago',
+            subscriptionId: null,
+            subscriptionPlan: null,
+            subscriptionBilling: null,
+            subscriptionProvider: null,
           },
         });
         return {
