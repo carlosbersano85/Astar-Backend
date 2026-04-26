@@ -57,4 +57,14 @@ export class PortalController {
   async markAllNotificationsRead(@CurrentUser() user: { id: string }) {
     return this.portalService.markAllNotificationsRead(user.id);
   }
+
+  @Get('subscription-status')
+  async getSubscriptionStatus(@CurrentUser() user: { id: string }) {
+    return this.portalService.getSubscriptionStatus(user.id);
+  }
+
+  @Get('access-status')
+  async getAccessStatus(@CurrentUser() user: { id: string }) {
+    return this.portalService.getAccessStatus(user.id);
+  }
 }
