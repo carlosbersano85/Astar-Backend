@@ -79,23 +79,13 @@ async function main() {
   }
 
   // Prices must match PaymentsService.getPlanAmount()
-  const plans = [
-    {
-      key: 'essentials',
-      label: 'Essentials',
-      prices: { monthly: '19.00', annual: '180.00' },
-    },
-    {
-      key: 'portal',
-      label: 'Portal',
-      prices: { monthly: '39.00', annual: '348.00' },
-    },
-    {
-      key: 'depth',
-      label: 'Depth',
-      prices: { monthly: '79.00', annual: '708.00' },
-    },
-  ];
+const plans = [
+  {
+    key: 'luminary',
+    label: 'Luminary',
+    prices: { monthly: '29.00' },
+  },
+];
 
   const results: Record<string, string> = {};
 
@@ -118,13 +108,6 @@ async function main() {
         amount: plan.prices.monthly,
         frequency: { interval_unit: 'MONTH', interval_count: 1 },
         description: `Monthly subscription billed at $${plan.prices.monthly} USD per month`,
-      },
-      {
-        key: 'annual',
-        label: 'Annual',
-        amount: plan.prices.annual,
-        frequency: { interval_unit: 'YEAR', interval_count: 1 },
-        description: `Annual subscription billed as a lump sum of $${plan.prices.annual} USD per year`,
       },
     ] as const;
 

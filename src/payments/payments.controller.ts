@@ -7,65 +7,65 @@ import { BillingCycle, PaymentsService, SubscriptionPlan } from './payments.serv
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
-  @Get('paypal/extra-session/pricing')
+  @Get('paypal/service/pricing')
   @UseGuards(JwtAuthGuard)
-  async getExtraSessionPricing(@CurrentUser() user: { id: string }, @Query('serviceId') serviceId?: string) {
-    return this.paymentsService.getPayPalExtraSessionPricing(user.id, serviceId);
+  async getServicePricing(@CurrentUser() user: { id: string }, @Query('serviceId') serviceId?: string) {
+    return this.paymentsService.getPayPalServicePricing(user.id, serviceId);
   }
 
-  @Post('paypal/extra-session/create')
+  @Post('paypal/service/create')
   @UseGuards(JwtAuthGuard)
-  async createPayPalExtraSessionOrder(@CurrentUser() user: { id: string }, @Body() body: { serviceId?: string }) {
-    return this.paymentsService.createPayPalExtraSessionOrder(user.id, body.serviceId?.trim() || undefined);
+  async createPayPalServiceOrder(@CurrentUser() user: { id: string }, @Body() body: { serviceId?: string }) {
+    return this.paymentsService.createPayPalServiceOrder(user.id, body.serviceId?.trim() || undefined);
   }
 
-  @Post('paypal/extra-session/confirm')
+  @Post('paypal/service/confirm')
   @UseGuards(JwtAuthGuard)
-  async confirmPayPalExtraSessionOrder(
+  async confirmPayPalServiceOrder(
     @CurrentUser() user: { id: string },
     @Body() body: { orderId?: string; subscriptionId?: string; serviceId?: string },
   ) {
     const checkoutId = body.subscriptionId?.trim() || body.orderId?.trim() || '';
-    return this.paymentsService.confirmPayPalExtraSessionOrder(user.id, checkoutId);
+    return this.paymentsService.confirmPayPalServiceOrder(user.id, checkoutId);
   }
 
-  @Get('mercado-pago/extra-session/pricing')
+  @Get('mercado-pago/service/pricing')
   @UseGuards(JwtAuthGuard)
-  async getMercadoPagoExtraSessionPricing(@CurrentUser() user: { id: string }, @Query('serviceId') serviceId?: string) {
-    return this.paymentsService.getMercadoPagoExtraSessionPricing(user.id, serviceId);
+  async getMercadoPagoServicePricing(@CurrentUser() user: { id: string }, @Query('serviceId') serviceId?: string) {
+    return this.paymentsService.getMercadoPagoServicePricing(user.id, serviceId);
   }
 
-  @Post('mercado-pago/extra-session/create')
+  @Post('mercado-pago/service/create')
   @UseGuards(JwtAuthGuard)
-  async createMercadoPagoExtraSessionPreference(@CurrentUser() user: { id: string }, @Body() body: { serviceId?: string }) {
-    return this.paymentsService.createMercadoPagoExtraSessionPreference(user.id, body.serviceId?.trim() || undefined);
+  async createMercadoPagoServicePreference(@CurrentUser() user: { id: string }, @Body() body: { serviceId?: string }) {
+    return this.paymentsService.createMercadoPagoServicePreference(user.id, body.serviceId?.trim() || undefined);
   }
 
-  @Post('mercado-pago/extra-session/confirm')
+  @Post('mercado-pago/service/confirm')
   @UseGuards(JwtAuthGuard)
-  async confirmMercadoPagoExtraSessionPayment(
+  async confirmMercadoPagoServicePayment(
     @CurrentUser() user: { id: string },
     @Body() body: { paymentId?: string; collectionId?: string; serviceId?: string },
   ) {
     const checkoutId = body.paymentId?.trim() || body.collectionId?.trim() || '';
-    return this.paymentsService.confirmMercadoPagoExtraSessionPayment(user.id, checkoutId);
+    return this.paymentsService.confirmMercadoPagoServicePayment(user.id, checkoutId);
   }
 
-  @Get('mercado-pago/extra-session/confirm')
+  @Get('mercado-pago/service/confirm')
   @UseGuards(JwtAuthGuard)
-  async confirmMercadoPagoExtraSessionPaymentFromQuery(
+  async confirmMercadoPagoServicePaymentFromQuery(
     @CurrentUser() user: { id: string },
     @Query('payment_id') paymentId?: string,
     @Query('collection_id') collectionId?: string,
     @Query('serviceId') serviceId?: string,
   ) {
     const checkoutId = paymentId?.trim() || collectionId?.trim() || '';
-    return this.paymentsService.confirmMercadoPagoExtraSessionPayment(user.id, checkoutId);
+    return this.paymentsService.confirmMercadoPagoServicePayment(user.id, checkoutId);
   }
 
-  @Get('paypal/extra-session/confirm')
+  @Get('paypal/service/confirm')
   @UseGuards(JwtAuthGuard)
-  async confirmPayPalExtraSessionOrderFromQuery(
+  async confirmPayPalServiceOrderFromQuery(
     @CurrentUser() user: { id: string },
     @Query('subscription_id') subscriptionIdFromPayPal?: string,
     @Query('subscriptionId') subscriptionId?: string,
@@ -80,7 +80,7 @@ export class PaymentsController {
       token?.trim() ||
       '';
 
-    return this.paymentsService.confirmPayPalExtraSessionOrder(user.id, checkoutId);
+    return this.paymentsService.confirmPayPalServiceOrder(user.id, checkoutId);
   }
 
   @Post('paypal/subscription/create')
