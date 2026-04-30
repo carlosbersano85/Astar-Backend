@@ -11,6 +11,16 @@ import { UsersService } from '../users/users.service';
 
 export type SubscriptionPlan = 'essentials' | 'portal' | 'depth';
 export type BillingCycle = 'monthly' | 'annual';
+export type OneTimeServiceId =
+  | 'current-moment'
+  | 'inner-energy'
+  | 'making-decision'
+  | 'next-6-months'
+  | 'next-12-months'
+  | 'personal-audio'
+  | 'live-birth-chart'
+  | 'live-solar-return'
+  | 'three-questions';
 type MercadoPagoSubscriptionMode = 'checkout' | 'preapproval';
 
 type AppSubscriptionStatus = 'active' | 'inactive' | 'cancelled';
@@ -75,13 +85,27 @@ interface MercadoPagoPreapprovalResponse {
   };
 }
 
-interface ExtraSessionPricing {
+interface ServicePricing {
+  serviceId: OneTimeServiceId;
+  serviceTitle: string;
   subscriberAmount: string;
   nonSubscriberAmount: string;
   appliedAmount: string;
   isSubscriber: boolean;
   currency: string;
 }
+
+const ONE_TIME_SERVICE_CATALOG: Record<OneTimeServiceId, { title: string; regular: string; subscriber: string }> = {
+  'current-moment': { title: 'Your Current Moment Reading + Questions', regular: '260', subscriber: '130' },
+  'inner-energy': { title: 'Inner Energy vs. Outward Expression', regular: '200', subscriber: '100' },
+  'making-decision': { title: 'Making a Decision', regular: '160', subscriber: '80' },
+  'next-6-months': { title: 'Your Next Steps (6 Months)', regular: '380', subscriber: '180' },
+  'next-12-months': { title: 'Your Next Steps (12 Months)', regular: '520', subscriber: '260' },
+  'personal-audio': { title: 'Personalized Audio', regular: '100', subscriber: '50' },
+  'live-birth-chart': { title: 'Live Birth Chart Reading', regular: '560', subscriber: '280' },
+  'live-solar-return': { title: 'Live Solar Return Reading', regular: '560', subscriber: '280' },
+  'three-questions': { title: '3 Questions (All Tools)', regular: '120', subscriber: '60' },
+};
 
 @Injectable()
 export class PaymentsService {
@@ -94,14 +118,20 @@ export class PaymentsService {
 
   // ─── Extra Session Pricing ────────────────────────────────────────────────
 
-  async getPayPalExtraSessionPricing(userId: string) {
+  async getPayPalServicePricing(userId: string, serviceId?: string) {
     const user = await this.usersService.findById(userId);
     if (!user || user.role !== 'client') {
       throw new ForbiddenException('Only client users can buy extra sessions.');
     }
 
-    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required for service purchases.');
+    }
+
+    const pricing = this.getOneTimePricingForUser(user.subscriptionStatus, serviceId);
     return {
+      serviceId: pricing.serviceId,
+      serviceTitle: pricing.serviceTitle,
       subscriberAmount: pricing.subscriberAmount,
       nonSubscriberAmount: pricing.nonSubscriberAmount,
       amount: pricing.appliedAmount,
@@ -110,14 +140,20 @@ export class PaymentsService {
     };
   }
 
-  async getMercadoPagoExtraSessionPricing(userId: string) {
+  async getMercadoPagoServicePricing(userId: string, serviceId?: string) {
     const user = await this.usersService.findById(userId);
     if (!user || user.role !== 'client') {
       throw new ForbiddenException('Only client users can buy extra sessions.');
     }
 
-    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required for service purchases.');
+    }
+
+    const pricing = this.getOneTimePricingForUser(user.subscriptionStatus, serviceId);
     return {
+      serviceId: pricing.serviceId,
+      serviceTitle: pricing.serviceTitle,
       subscriberAmount: pricing.subscriberAmount,
       nonSubscriberAmount: pricing.nonSubscriberAmount,
       amount: pricing.appliedAmount,
@@ -128,15 +164,23 @@ export class PaymentsService {
 
   // ─── Extra Session: Create Order (Orders API v2) ──────────────────────────
 
-  async createPayPalExtraSessionOrder(userId: string) {
+  async createPayPalServiceOrder(userId: string, serviceId?: string) {
     const user = await this.usersService.findById(userId);
     if (!user || user.role !== 'client') {
       throw new ForbiddenException('Only client users can buy extra sessions.');
     }
 
-    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required to create a service purchase.');
+    }
+
+    const pricing = this.getOneTimePricingForUser(user.subscriptionStatus, serviceId);
+    this.logger.debug(`createPayPalServiceOrder: user=${userId} serviceId=${serviceId} appliedAmount=${pricing.appliedAmount} (subscriber=${pricing.isSubscriber})`);
     const frontendBaseUrl = this.getFrontendBaseUrl();
     const tier = pricing.isSubscriber ? 'subscriber' : 'standard';
+    const customId = this.buildOneTimeCustomId(userId, pricing.serviceId, tier);
+    const returnPath = this.buildOneTimeReturnPath('paypal', 'success', pricing.serviceId);
+    const cancelPath = this.buildOneTimeReturnPath('paypal', 'cancel', pricing.serviceId);
 
     const payload = {
       intent: 'CAPTURE',
@@ -146,15 +190,15 @@ export class PaymentsService {
             currency_code: pricing.currency,
             value: pricing.appliedAmount,
           },
-          custom_id: `${userId}:extra-session:${tier}`,
-          description: 'Sesion privada adicional',
+          custom_id: customId,
+          description: pricing.serviceTitle,
         },
       ],
       application_context: {
         brand_name: 'Astar',
         user_action: 'PAY_NOW',
-        return_url: `${frontendBaseUrl}/portal/purchase?paypal=success&product=extra-session`,
-        cancel_url: `${frontendBaseUrl}/portal/purchase?paypal=cancel&product=extra-session`,
+        return_url: `${frontendBaseUrl}${returnPath}`,
+        cancel_url: `${frontendBaseUrl}${cancelPath}`,
         shipping_preference: 'NO_SHIPPING',
       },
     };
@@ -175,6 +219,8 @@ export class PaymentsService {
     return {
       orderId: data.id,
       approvalUrl,
+      serviceId: pricing.serviceId,
+      serviceTitle: pricing.serviceTitle,
       subscriberAmount: pricing.subscriberAmount,
       nonSubscriberAmount: pricing.nonSubscriberAmount,
       amount: pricing.appliedAmount,
@@ -183,28 +229,33 @@ export class PaymentsService {
     };
   }
 
-  async createMercadoPagoExtraSessionPreference(userId: string) {
+  async createMercadoPagoServicePreference(userId: string, serviceId?: string) {
     const user = await this.usersService.findById(userId);
     if (!user || user.role !== 'client') {
       throw new ForbiddenException('Only client users can buy extra sessions.');
     }
 
-    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required to create a service purchase.');
+    }
+
+    const pricing = this.getOneTimePricingForUser(user.subscriptionStatus, serviceId);
+    this.logger.debug(`createMercadoPagoServicePreference: user=${userId} serviceId=${serviceId} appliedAmount=${pricing.appliedAmount} (subscriber=${pricing.isSubscriber})`);
     const frontendBaseUrl = this.getFrontendBaseUrl();
     const tier = pricing.isSubscriber ? 'subscriber' : 'standard';
-    const backUrls = this.getMercadoPagoBackUrls(frontendBaseUrl);
+    const backUrls = this.getMercadoPagoBackUrls(frontendBaseUrl, pricing.serviceId);
     const webhookUrl = this.getMercadoPagoWebhookUrl();
 
     const payload: Record<string, unknown> = {
       items: [
         {
-          title: 'Sesion privada adicional',
+          title: pricing.serviceTitle,
           quantity: 1,
           currency_id: pricing.currency,
           unit_price: Number(pricing.appliedAmount),
         },
       ],
-      external_reference: `${userId}:extra-session:${tier}`,
+      external_reference: this.buildOneTimeCustomId(userId, pricing.serviceId, tier),
       payer: {
         email: user.email,
         name: user.name,
@@ -232,6 +283,8 @@ export class PaymentsService {
     return {
       preferenceId: data.id,
       checkoutUrl,
+      serviceId: pricing.serviceId,
+      serviceTitle: pricing.serviceTitle,
       subscriberAmount: pricing.subscriberAmount,
       nonSubscriberAmount: pricing.nonSubscriberAmount,
       amount: pricing.appliedAmount,
@@ -242,7 +295,7 @@ export class PaymentsService {
 
   // ─── Extra Session: Confirm & Capture Order ───────────────────────────────
 
-  async confirmPayPalExtraSessionOrder(userId: string, orderId: string) {
+  async confirmPayPalServiceOrder(userId: string, orderId: string) {
     if (!orderId?.trim()) {
       throw new BadRequestException('orderId is required.');
     }
@@ -281,7 +334,7 @@ export class PaymentsService {
 
     // Verify the order belongs to this user via custom_id
     const unit = details.purchase_units?.[0];
-    const customInfo = this.parseExtraSessionCustomId(unit?.custom_id);
+    const customInfo = this.parseOneTimeCustomId(unit?.custom_id);
     if (customInfo && customInfo.userId !== userId) {
       throw new ForbiddenException('This extra session order does not belong to the current user.');
     }
@@ -304,7 +357,7 @@ export class PaymentsService {
     return this.handleCompletedOrder(capture, userId, orderId, user);
   }
 
-  async confirmMercadoPagoExtraSessionPayment(userId: string, paymentId: string) {
+  async confirmMercadoPagoServicePayment(userId: string, paymentId: string) {
     if (!paymentId?.trim()) {
       throw new BadRequestException('paymentId is required.');
     }
@@ -334,19 +387,19 @@ export class PaymentsService {
       );
     }
 
-    const customInfo = this.parseExtraSessionCustomId(payment.external_reference);
+    const customInfo = this.parseOneTimeCustomId(payment.external_reference);
     if (customInfo && customInfo.userId !== userId) {
       throw new ForbiddenException('This Mercado Pago payment does not belong to the current user.');
     }
 
+    const pricing = this.getOneTimePricingForUser(user.subscriptionStatus, customInfo?.serviceId);
     const amount = Number.isFinite(payment.transaction_amount)
       ? Number(payment.transaction_amount).toFixed(2)
-      : this.getExtraSessionPricingForUser(user.subscriptionStatus).appliedAmount;
+      : pricing.appliedAmount;
 
-    const currency = payment.currency_id?.toUpperCase() || this.getExtraSessionCurrency();
-    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
-    const orderType = customInfo?.tier === 'subscriber' ? 'extra_session_subscriber' : 'extra_session_standard';
+    const currency = payment.currency_id?.toUpperCase() || pricing.currency;
     const tier = customInfo?.tier ?? (pricing.isSubscriber ? 'subscriber' : 'standard');
+    const orderType = this.buildOneTimeOrderType(pricing.serviceId, tier);
 
     const { created } = await this.createOrderAndAdminNotification({
       userId,
@@ -371,11 +424,11 @@ export class PaymentsService {
 
     const amount = capture?.amount?.value ?? unit?.amount?.value ?? '0';
     const currency = capture?.amount?.currency_code ?? unit?.amount?.currency_code ?? 'USD';
-    const customInfo = this.parseExtraSessionCustomId(unit?.custom_id);
+    const customInfo = this.parseOneTimeCustomId(unit?.custom_id);
 
-    const pricing = this.getExtraSessionPricingForUser(user.subscriptionStatus);
-    const orderType = customInfo?.tier === 'subscriber' ? 'extra_session_subscriber' : 'extra_session_standard';
+    const pricing = this.getOneTimePricingForUser(user.subscriptionStatus, customInfo?.serviceId);
     const tier = customInfo?.tier ?? (pricing.isSubscriber ? 'subscriber' : 'standard');
+    const orderType = this.buildOneTimeOrderType(pricing.serviceId, tier);
 
     const { created } = await this.createOrderAndAdminNotification({
       userId,
@@ -665,7 +718,6 @@ export class PaymentsService {
     currency: string,
     backUrls: { success: string; failure: string; pending: string },
   ) {
-
     const payload: Record<string, unknown> = {
       items: [
         {
@@ -739,7 +791,6 @@ export class PaymentsService {
     const autoRecurring =
       billing === 'annual'
         ? {
-            // Annual charges once per year in preapproval mode.
             frequency: 1,
             frequency_type: 'years',
             transaction_amount: amount,
@@ -1078,10 +1129,7 @@ export class PaymentsService {
           subscriptionProvider: null,
         },
       });
-      return {
-        received: true,
-        processed: true,
-      };
+      return { received: true, processed: true };
     }
 
     if (eventType === 'BILLING.SUBSCRIPTION.PAYMENT.FAILED') {
@@ -1150,11 +1198,7 @@ export class PaymentsService {
             subscriptionProvider: null,
           },
         });
-        return {
-          received: true,
-          processed: true,
-          status,
-        };
+        return { received: true, processed: true, status };
       }
 
       if (status === 'in_process' || status === 'pending') {
@@ -1223,11 +1267,7 @@ export class PaymentsService {
             subscriptionProvider: null,
           },
         });
-        return {
-          received: true,
-          processed: true,
-          status,
-        };
+        return { received: true, processed: true, status };
       }
 
       if (status === 'pending') {
@@ -1285,38 +1325,112 @@ export class PaymentsService {
     return `${frontendBaseUrl}/subscribe/mercado-pago/success?preapproval_id=${encodedSubscriptionId}&simulated=1`;
   }
 
-  private getExtraSessionPricingForUser(subscriptionStatus?: string): ExtraSessionPricing {
-    const subscriberAmount = this.getRequiredPriceEnv('PAYPAL_EXTRA_SESSION_PRICE_SUBSCRIBER');
-    const nonSubscriberAmount = this.getRequiredPriceEnv('PAYPAL_EXTRA_SESSION_PRICE_NON_SUBSCRIBER');
+  /**
+   * Read per-service price env var if present, otherwise fall back to the
+   * static catalog value for that service. Env var names are constructed as:
+   * SERVICE_{SERVICE_ID_UPPER_UNDERSCORE}_SUBSCRIBER
+   * SERVICE_{SERVICE_ID_UPPER_UNDERSCORE}_NON_SUBSCRIBER
+   */
+  private getServicePriceFromEnv(serviceId: OneTimeServiceId, subscriber: boolean): string {
+    const keyBase = `SERVICE_${serviceId.replace(/-/g, '_').toUpperCase()}`;
+    const key = subscriber ? `${keyBase}_SUBSCRIBER` : `${keyBase}_NON_SUBSCRIBER`;
+    const fromEnv = process.env[key];
+    if (fromEnv && fromEnv.trim() !== '') return fromEnv.trim();
+
+    // Fall back to the in-repo catalog values if env var is not provided.
+    const svc = ONE_TIME_SERVICE_CATALOG[serviceId];
+    return subscriber ? svc.subscriber : svc.regular;
+  }
+
+  private getOneTimePricingForUser(subscriptionStatus?: string, serviceId?: string | null): ServicePricing {
     const isSubscriber = subscriptionStatus === 'active';
 
+    if (!serviceId || !this.isOneTimeServiceId(serviceId)) {
+      throw new BadRequestException('serviceId is required for service purchases.');
+    }
+
+    const service = ONE_TIME_SERVICE_CATALOG[serviceId];
+    const subscriberAmount = this.getServicePriceFromEnv(serviceId, true);
+    const nonSubscriberAmount = this.getServicePriceFromEnv(serviceId, false);
     return {
+      serviceId,
+      serviceTitle: service.title,
       subscriberAmount,
       nonSubscriberAmount,
       appliedAmount: isSubscriber ? subscriberAmount : nonSubscriberAmount,
       isSubscriber,
-      currency: this.getExtraSessionCurrency(),
+      currency: this.getServiceCurrency(),
     };
   }
 
-  private getRequiredPriceEnv(
-    variableName: 'PAYPAL_EXTRA_SESSION_PRICE_SUBSCRIBER' | 'PAYPAL_EXTRA_SESSION_PRICE_NON_SUBSCRIBER',
-  ) {
-    const value = process.env[variableName]?.trim();
-    if (!value) {
-      throw new InternalServerErrorException(`Missing ${variableName} environment variable.`);
+  private buildOneTimeCustomId(userId: string, serviceId: OneTimeServiceId | null, tier: 'subscriber' | 'standard') {
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required for service purchases.');
     }
 
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) {
-      throw new InternalServerErrorException(`${variableName} must be a positive number.`);
-    }
-
-    return numeric.toFixed(2);
+    return `${userId}:service:${serviceId}:${tier}`;
   }
 
-  private getExtraSessionCurrency() {
-    return process.env.PAYPAL_EXTRA_SESSION_CURRENCY?.trim().toUpperCase() || 'USD';
+  private buildOneTimeOrderType(serviceId: OneTimeServiceId | null, tier: 'subscriber' | 'standard') {
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required for service purchases.');
+    }
+
+    return `service_${serviceId}_${tier}`;
+  }
+
+  private buildOneTimeReturnPath(
+    provider: 'paypal' | 'mercado_pago',
+    status: 'success' | 'cancel',
+    serviceId: OneTimeServiceId | null,
+  ) {
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required for service purchases.');
+    }
+
+    const serviceQuery = `product=service&service=${encodeURIComponent(serviceId)}`;
+    const statusKey = provider === 'paypal' ? 'paypal' : 'mp';
+    return `/portal/purchase?${statusKey}=${status}&${serviceQuery}`;
+  }
+
+  private parseOneTimeCustomId(
+    customId?: string,
+  ): { userId: string; serviceId: OneTimeServiceId | null; tier: 'subscriber' | 'standard' } | null {
+    if (!customId) return null;
+
+    const parts = customId.split(':');
+    if (parts.length === 4) {
+      const [userId, product, serviceId, tier] = parts;
+      if (
+        !userId ||
+        product !== 'service' ||
+        !this.isOneTimeServiceId(serviceId) ||
+        (tier !== 'subscriber' && tier !== 'standard')
+      ) {
+        return null;
+      }
+
+      return { userId, serviceId, tier };
+    }
+
+    return null;
+  }
+
+  private isOneTimeServiceId(value: string): value is OneTimeServiceId {
+    return Object.prototype.hasOwnProperty.call(ONE_TIME_SERVICE_CATALOG, value);
+  }
+
+  /**
+   * Currency used for one-time service purchases (both PayPal and MercadoPago).
+   * Uses SERVICE_CURRENCY, falling back to the legacy PAYPAL_EXTRA_SESSION_CURRENCY,
+   * then defaulting to USD.
+   */
+  private getServiceCurrency() {
+    return (
+      process.env.SERVICE_CURRENCY?.trim().toUpperCase() ||
+      process.env.PAYPAL_EXTRA_SESSION_CURRENCY?.trim().toUpperCase() ||
+      'USD'
+    );
   }
 
   private getMercadoPagoSubscriptionCurrency() {
@@ -1324,16 +1438,7 @@ export class PaymentsService {
       process.env.MERCADOPAGO_SUBSCRIPTION_CURRENCY?.trim().toUpperCase() ||
       process.env.MERCADOPAGO_CURRENCY?.trim().toUpperCase();
 
-    return configured || this.getExtraSessionCurrency();
-  }
-
-  private parseExtraSessionCustomId(customId?: string): { userId: string; tier: 'subscriber' | 'standard' } | null {
-    if (!customId) return null;
-    const [userId, product, tier] = customId.split(':');
-    if (!userId || product !== 'extra-session' || (tier !== 'subscriber' && tier !== 'standard')) {
-      return null;
-    }
-    return { userId, tier };
+    return configured || this.getServiceCurrency();
   }
 
   private async createRecurringSubscriptionOrderIfNeeded(
@@ -1429,12 +1534,6 @@ export class PaymentsService {
     });
   }
 
-  private sleep(ms: number) {
-    return new Promise<void>((resolve) => {
-      setTimeout(resolve, ms);
-    });
-  }
-
   private getFrontendBaseUrl() {
     const value = process.env.FRONTEND_URL?.trim();
     if (!value) {
@@ -1443,20 +1542,25 @@ export class PaymentsService {
     return value.replace(/\/$/, '');
   }
 
-  private getMercadoPagoBackUrls(frontendBaseUrl: string) {
+  private getMercadoPagoBackUrls(frontendBaseUrl: string, serviceId?: OneTimeServiceId | null) {
+    if (!serviceId) {
+      throw new BadRequestException('serviceId is required for service purchases.');
+    }
+
+    const serviceQuery = `product=service&service=${encodeURIComponent(serviceId)}`;
     const success = this.toAbsoluteUrl(
       process.env.MERCADOPAGO_BACK_URL_SUCCESS,
-      `${frontendBaseUrl}/portal/purchase?mp=success&product=extra-session`,
+      `${frontendBaseUrl}/portal/purchase?mp=success&${serviceQuery}`,
       'MERCADOPAGO_BACK_URL_SUCCESS',
     );
     const failure = this.toAbsoluteUrl(
       process.env.MERCADOPAGO_BACK_URL_FAILURE,
-      `${frontendBaseUrl}/portal/purchase?mp=failure&product=extra-session`,
+      `${frontendBaseUrl}/portal/purchase?mp=failure&${serviceQuery}`,
       'MERCADOPAGO_BACK_URL_FAILURE',
     );
     const pending = this.toAbsoluteUrl(
       process.env.MERCADOPAGO_BACK_URL_PENDING,
-      `${frontendBaseUrl}/portal/purchase?mp=pending&product=extra-session`,
+      `${frontendBaseUrl}/portal/purchase?mp=pending&${serviceQuery}`,
       'MERCADOPAGO_BACK_URL_PENDING',
     );
 
@@ -1528,18 +1632,12 @@ export class PaymentsService {
 
   private getPayPalPlanId(plan: SubscriptionPlan, billing: BillingCycle) {
     const planMap: Record<SubscriptionPlan, Record<BillingCycle, string | undefined>> = {
-      essentials: {
-        monthly: process.env.PAYPAL_PLAN_ID_ESSENTIALS_MONTHLY,
-        annual: process.env.PAYPAL_PLAN_ID_ESSENTIALS_ANNUAL,
-      },
+      essentials: { monthly: undefined, annual: undefined },
       portal: {
-        monthly: process.env.PAYPAL_PLAN_ID_PORTAL_MONTHLY,
-        annual: process.env.PAYPAL_PLAN_ID_PORTAL_ANNUAL,
+        monthly: process.env.PAYPAL_PLAN_ID_LUMINARY_MONTHLY,
+        annual: process.env.PAYPAL_PLAN_ID_LUMINARY_ANNUAL,
       },
-      depth: {
-        monthly: process.env.PAYPAL_PLAN_ID_DEPTH_MONTHLY,
-        annual: process.env.PAYPAL_PLAN_ID_DEPTH_ANNUAL,
-      },
+      depth: { monthly: undefined, annual: undefined },
     };
 
     const planId = planMap[plan][billing]?.trim();
@@ -1552,7 +1650,7 @@ export class PaymentsService {
   private getPlanAmount(plan: SubscriptionPlan, billing: BillingCycle) {
     const amountMap: Record<SubscriptionPlan, Record<BillingCycle, string>> = {
       essentials: { monthly: '19', annual: '180' },
-      portal: { monthly: '39', annual: '348' },
+      portal: { monthly: '29', annual: '348' },
       depth: { monthly: '79', annual: '708' },
     };
     return amountMap[plan][billing];
