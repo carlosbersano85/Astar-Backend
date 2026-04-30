@@ -9,21 +9,21 @@ export class PaymentsController {
 
   @Get('paypal/extra-session/pricing')
   @UseGuards(JwtAuthGuard)
-  async getExtraSessionPricing(@CurrentUser() user: { id: string }) {
-    return this.paymentsService.getPayPalExtraSessionPricing(user.id);
+  async getExtraSessionPricing(@CurrentUser() user: { id: string }, @Query('serviceId') serviceId?: string) {
+    return this.paymentsService.getPayPalExtraSessionPricing(user.id, serviceId);
   }
 
   @Post('paypal/extra-session/create')
   @UseGuards(JwtAuthGuard)
-  async createPayPalExtraSessionOrder(@CurrentUser() user: { id: string }) {
-    return this.paymentsService.createPayPalExtraSessionOrder(user.id);
+  async createPayPalExtraSessionOrder(@CurrentUser() user: { id: string }, @Body() body: { serviceId?: string }) {
+    return this.paymentsService.createPayPalExtraSessionOrder(user.id, body.serviceId?.trim() || undefined);
   }
 
   @Post('paypal/extra-session/confirm')
   @UseGuards(JwtAuthGuard)
   async confirmPayPalExtraSessionOrder(
     @CurrentUser() user: { id: string },
-    @Body() body: { orderId?: string; subscriptionId?: string },
+    @Body() body: { orderId?: string; subscriptionId?: string; serviceId?: string },
   ) {
     const checkoutId = body.subscriptionId?.trim() || body.orderId?.trim() || '';
     return this.paymentsService.confirmPayPalExtraSessionOrder(user.id, checkoutId);
@@ -31,21 +31,21 @@ export class PaymentsController {
 
   @Get('mercado-pago/extra-session/pricing')
   @UseGuards(JwtAuthGuard)
-  async getMercadoPagoExtraSessionPricing(@CurrentUser() user: { id: string }) {
-    return this.paymentsService.getMercadoPagoExtraSessionPricing(user.id);
+  async getMercadoPagoExtraSessionPricing(@CurrentUser() user: { id: string }, @Query('serviceId') serviceId?: string) {
+    return this.paymentsService.getMercadoPagoExtraSessionPricing(user.id, serviceId);
   }
 
   @Post('mercado-pago/extra-session/create')
   @UseGuards(JwtAuthGuard)
-  async createMercadoPagoExtraSessionPreference(@CurrentUser() user: { id: string }) {
-    return this.paymentsService.createMercadoPagoExtraSessionPreference(user.id);
+  async createMercadoPagoExtraSessionPreference(@CurrentUser() user: { id: string }, @Body() body: { serviceId?: string }) {
+    return this.paymentsService.createMercadoPagoExtraSessionPreference(user.id, body.serviceId?.trim() || undefined);
   }
 
   @Post('mercado-pago/extra-session/confirm')
   @UseGuards(JwtAuthGuard)
   async confirmMercadoPagoExtraSessionPayment(
     @CurrentUser() user: { id: string },
-    @Body() body: { paymentId?: string; collectionId?: string },
+    @Body() body: { paymentId?: string; collectionId?: string; serviceId?: string },
   ) {
     const checkoutId = body.paymentId?.trim() || body.collectionId?.trim() || '';
     return this.paymentsService.confirmMercadoPagoExtraSessionPayment(user.id, checkoutId);
@@ -57,6 +57,7 @@ export class PaymentsController {
     @CurrentUser() user: { id: string },
     @Query('payment_id') paymentId?: string,
     @Query('collection_id') collectionId?: string,
+    @Query('serviceId') serviceId?: string,
   ) {
     const checkoutId = paymentId?.trim() || collectionId?.trim() || '';
     return this.paymentsService.confirmMercadoPagoExtraSessionPayment(user.id, checkoutId);
@@ -70,6 +71,7 @@ export class PaymentsController {
     @Query('subscriptionId') subscriptionId?: string,
     @Query('orderId') orderId?: string,
     @Query('token') token?: string,
+    @Query('serviceId') serviceId?: string,
   ) {
     const checkoutId =
       subscriptionIdFromPayPal?.trim() ||
