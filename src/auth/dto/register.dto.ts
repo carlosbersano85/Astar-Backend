@@ -1,4 +1,13 @@
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsLatitude,
+  IsLongitude,
+  IsString,
+  Matches,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
 
 export class RegisterDto {
   @IsString()
@@ -18,6 +27,23 @@ export class RegisterDto {
   @IsString()
   birthPlace!: string;
 
+  @IsLatitude()
+  birthLatitude!: string;
+
+  @IsLongitude()
+  birthLongitude!: string;
+
   @IsString()
-  birthTime!: string;
+  @MinLength(1)
+  birthTimezone!: string;
+
+  @IsBoolean()
+  birthTimeKnown!: boolean;
+
+  @ValidateIf((dto: RegisterDto) => dto.birthTimeKnown)
+  @IsString()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
+    message: 'birthTime must use HH:mm format',
+  })
+  birthTime?: string;
 }
