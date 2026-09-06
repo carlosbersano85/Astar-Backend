@@ -28,6 +28,10 @@ export class UsersService {
     birthDate?: string;
     birthPlace?: string;
     birthTime?: string;
+    birthLatitude?: number;
+    birthLongitude?: number;
+    birthTimezone?: string;
+    birthTimeKnown?: boolean;
   }): Promise<UserResponse> {
     const normalizedEmail = data.email.trim().toLowerCase();
     const existing = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
@@ -46,6 +50,10 @@ export class UsersService {
         birthDate: data.birthDate ?? null,
         birthPlace: data.birthPlace ?? null,
         birthTime: data.birthTime ?? null,
+        birthLatitude: data.birthLatitude ?? null,
+        birthLongitude: data.birthLongitude ?? null,
+        birthTimezone: data.birthTimezone ?? null,
+        birthTimeKnown: data.birthTimeKnown ?? true,
       },
     });
     return this.toResponse(user);
