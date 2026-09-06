@@ -3,6 +3,7 @@ import {
   IsEmail,
   IsLatitude,
   IsLongitude,
+  IsOptional,
   IsString,
   Matches,
   MinLength,
@@ -27,20 +28,25 @@ export class RegisterDto {
   @IsString()
   birthPlace!: string;
 
+  @IsOptional()
   @IsLatitude()
-  birthLatitude!: string;
+  birthLatitude?: string;
 
+  @IsOptional()
   @IsLongitude()
-  birthLongitude!: string;
+  birthLongitude?: string;
 
+  @IsOptional()
   @IsString()
   @MinLength(1)
-  birthTimezone!: string;
+  birthTimezone?: string;
 
+  @IsOptional()
   @IsBoolean()
-  birthTimeKnown!: boolean;
+  birthTimeKnown?: boolean;
 
-  @ValidateIf((dto: RegisterDto) => dto.birthTimeKnown)
+  @ValidateIf((dto: RegisterDto) => dto.birthTimeKnown !== false)
+  @IsOptional()
   @IsString()
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
     message: 'birthTime must use HH:mm format',
