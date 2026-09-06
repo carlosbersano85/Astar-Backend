@@ -26,7 +26,11 @@ export class AuthService {
       subscriptionStatus: 'inactive',
       birthDate: dto.birthDate,
       birthPlace: dto.birthPlace,
-      birthTime: dto.birthTime,
+      birthTime: dto.birthTimeKnown ? dto.birthTime : undefined,
+      birthLatitude: Number(dto.birthLatitude),
+      birthLongitude: Number(dto.birthLongitude),
+      birthTimezone: dto.birthTimezone,
+      birthTimeKnown: dto.birthTimeKnown,
     });
     const token = this.jwtService.sign({ sub: user.id, email: user.email });
     return { user, access_token: token };
