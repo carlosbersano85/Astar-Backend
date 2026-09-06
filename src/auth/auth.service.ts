@@ -17,6 +17,7 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResult> {
+    const birthTimeKnown = dto.birthTimeKnown ?? Boolean(dto.birthTime);
     const user = await this.usersService.create({
       email: dto.email,
       name: dto.name,
@@ -26,11 +27,13 @@ export class AuthService {
       subscriptionStatus: 'inactive',
       birthDate: dto.birthDate,
       birthPlace: dto.birthPlace,
-      birthTime: dto.birthTimeKnown ? dto.birthTime : undefined,
-      birthLatitude: Number(dto.birthLatitude),
-      birthLongitude: Number(dto.birthLongitude),
+      birthTime: birthTimeKnown ? dto.birthTime : undefined,
+      birthLatitude:
+        dto.birthLatitude === undefined ? undefined : Number(dto.birthLatitude),
+      birthLongitude:
+        dto.birthLongitude === undefined ? undefined : Number(dto.birthLongitude),
       birthTimezone: dto.birthTimezone,
-      birthTimeKnown: dto.birthTimeKnown,
+      birthTimeKnown,
     });
     const token = this.jwtService.sign({ sub: user.id, email: user.email });
     return { user, access_token: token };
