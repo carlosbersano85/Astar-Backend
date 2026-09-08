@@ -17,20 +17,9 @@ export class AstroService {
   private demoNatalChartCache: unknown | null = null;
 
   async getNatalChart(birthData: any) {
-    const chartTitle = `${birthData.name || 'Carta natal'} · Carta natal`.slice(0, 40);
     const response = await axios.post(
-      `${this.BASE}/api/v5/chart/birth-chart`,
-      {
-        subject: birthData,
-        theme: 'dark',
-        language: 'ES',
-        style: 'modern',
-        show_zodiac_background_ring: true,
-        transparent_background: true,
-        show_degree_indicators: true,
-        show_aspect_icons: true,
-        custom_title: chartTitle,
-      },
+      `${this.BASE}/api/v5/chart-data/birth-chart`,
+      { subject: birthData },
       { headers: this.headers },
     );
     return response.data;
