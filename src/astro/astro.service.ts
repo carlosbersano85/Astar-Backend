@@ -331,7 +331,10 @@ export class AstroService {
       )}°${candidate.house ? ` · transita Casa ${candidate.house}` : ''}${
         candidate.movement ? ` · ${candidate.movement}` : ''
       }.`,
-      focus: `${transitLabel} ${aspectLabel} ${natalLabel}${
+      // The natal wheel should focus on the point receiving the transit and
+      // the natal house being activated. The transiting planet is explained
+      // in the text instead of being mistaken for its natal counterpart.
+      focus: `${natalLabel}${
         candidate.house ? ` Casa ${candidate.house}` : ''
       }`,
       technical: {
