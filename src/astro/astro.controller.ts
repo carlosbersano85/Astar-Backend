@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Get,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -86,6 +87,66 @@ export class AstroController {
   @UseGuards(JwtAuthGuard)
   async getUserNatalChart(@CurrentUser() user: { id: string }) {
     const dbUser = await this.usersService.findById(user.id);
+    const birthData = this.buildBirthData(dbUser);
+
+    if (!dbUser?.birthTimeKnown || !dbUser?.birthTime) {
+      return {
+        success: true,
+        limited: true,
+        data: null,
+        message:
+          'La hora exacta permite calcular el Ascendente y las casas. Tu perfil conservará una lectura limitada.',
+        userId: user.id,
+      };
+    }
+
+    const data = await this.astroService.getNatalChart(birthData);
+    return { success: true, limited: false, data, userId: user.id };
+  }
+
+  @Get('important-moments/user')
+  @UseGuards(JwtAuthGuard, RequireSubscriptionGuard)
+  async getUserImportantMoments(
+    @CurrentUser() user: { id: string },
+    @Query('months') monthsParam?: string,
+  ) {
+    const dbUser = await this.usersService.findById(user.id);
+    const birthData = this.buildBirthData(dbUser);
+
+    if (!dbUser?.birthTimeKnown || !dbUser?.birthTime) {
+      throw new BadRequestException(
+        'La hora exacta es necesaria para calcular los momentos importantes con casas y ángulos.',
+      );
+    }
+
+    const parsedMonths = Number(monthsParam || 12);
+    const months = [3, 6, 12].includes(parsedMonths) ? parsedMonths : 12;
+
+    const data = await this.astroService.getImportantMoments(
+      birthData,
+      months,
+    );
+
+    return {
+      success: true,
+      ...data,
+      userId: user.id,
+    };
+  }
+
+  @Get('numerology/user')
+  @UseGuards(JwtAuthGuard)
+  async getUserNumerology(@CurrentUser() user: { id: string }) {
+    const dbUser = await this.usersService.findById(user.id);
+    if (!dbUser || !dbUser.birthDate) {
+      throw new ForbiddenException('Birth date not found in profile');
+    }
+
+    const data = this.astroService.getNumerology(dbUser.birthDate, dbUser.name);
+    return { success: true, data };
+  }
+
+  private buildBirthData(dbUser: any) {
     if (!dbUser || !dbUser.birthDate) {
       throw new ForbiddenException('Birth date not found in profile');
     }
@@ -100,21 +161,14 @@ export class AstroController {
       );
     }
 
-    if (!dbUser.birthTimeKnown || !dbUser.birthTime) {
-      return {
-        success: true,
-        limited: true,
-        data: null,
-        message:
-          'La hora exacta permite calcular el Ascendente y las casas. Tu perfil conservará una lectura limitada.',
-        userId: user.id,
-      };
+    if (!dbUser.birthTime) {
+      return null;
     }
 
     const [year, month, day] = dbUser.birthDate.split('-').map(Number);
     const [hour, minute] = dbUser.birthTime.split(':').map(Number);
 
-    const birthData = {
+    return {
       name: dbUser.name,
       year,
       month,
@@ -130,20 +184,5 @@ export class AstroController {
       perspective_type: 'Apparent Geocentric',
       houses_system_identifier: 'P',
     };
-
-    const data = await this.astroService.getNatalChart(birthData);
-    return { success: true, limited: false, data, userId: user.id };
-  }
-
-  @Get('numerology/user')
-  @UseGuards(JwtAuthGuard)
-  async getUserNumerology(@CurrentUser() user: { id: string }) {
-    const dbUser = await this.usersService.findById(user.id);
-    if (!dbUser || !dbUser.birthDate) {
-      throw new ForbiddenException('Birth date not found in profile');
-    }
-
-    const data = this.astroService.getNumerology(dbUser.birthDate, dbUser.name);
-    return { success: true, data };
   }
 }
