@@ -335,7 +335,7 @@ export class AstroService {
         candidate.house ? ` Casa ${candidate.house}` : ''
       }`,
       technical: {
-        transitPlanet,
+        transitPlanet: candidate.transitPlanet,
         natalPoint: candidate.natalPoint,
         aspect: candidate.aspect,
         orbit: candidate.orbit,
